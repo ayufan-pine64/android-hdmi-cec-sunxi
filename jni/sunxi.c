@@ -1,4 +1,4 @@
-#define LOG_TAG "SUNXI"
+#define LOG_TAG "sunxi-hdmi-cec"
 
 #include <hardware/hdmi_cec.h>
 
@@ -13,7 +13,10 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-#define ALOGE(...) do{}while(0)
+#define ALOGV(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define ALOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define ALOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define ALOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 #define HDMICEC_IOC_MAGIC  'H'
 #define HDMICEC_IOC_SETLOGICALADDRESS _IOW(HDMICEC_IOC_MAGIC,  1, unsigned char)
@@ -39,12 +42,14 @@ static cec_logical_address_t logical_address = CEC_DEVICE_INACTIVE;
 
 static int enable_hdmi_cec() {
 	if(enabled) {
+		ALOGV("enable_hdmi_cec: is already enabled");
 		return 0;
 	}
 	int ret = ioctl(fd, HDMICEC_IOC_STARTDEVICE, NULL);
 	if(ret < 0) {
-		ALOGE("Unable to start device: %d", ret);
+		ALOGI("enable_hdmi_cec: failed: %d", ret);
 	} else {
+		ALOGI("enable_hdmi_cec: enabled");
 		enabled = 1;
 	}
 	return ret;
@@ -52,12 +57,14 @@ static int enable_hdmi_cec() {
 
 static int disable_hdmi_cec() {
 	if(!enabled) {
+		ALOGV("disable_hdmi_cec: is already disabled");
 		return 0;
 	}
 	int ret = ioctl(fd, HDMICEC_IOC_STOPDEVICE, NULL);
 	if(ret < 0) {
-		ALOGE("Unable to stop device: %d", ret);
+		ALOGI("disable_hdmi_cec: failed: %d", ret);
 	} else {
+		ALOGI("disable_hdmi_cec: disabled");
 		enabled = 0;
 	}
 	return ret;
@@ -71,8 +78,12 @@ static int add_logical_address(const struct hdmi_cec_device* dev, cec_logical_ad
 	int ret = ioctl(fd, HDMICEC_IOC_SETLOGICALADDRESS, addr);
 	if(ret == 0) {
 		logical_address = addr;
+		ALOGI("add_logical_address: %d", addr);
+		return 0;
+	} else {
+		ALOGE("add_logical_address: failed: %d", errno);
+		return -errno;
 	}
-	return -1;
 }
 
 static void clear_logical_address(const struct hdmi_cec_device* dev)
@@ -82,15 +93,57 @@ static void clear_logical_address(const struct hdmi_cec_device* dev)
 
 static int get_physical_address(const struct hdmi_cec_device* dev, uint16_t* addr)
 {
-	return ioctl(fd, HDMICEC_IOC_GETPHYADDRESS, addr);
+	int ret = ioctl(fd, HDMICEC_IOC_GETPHYADDRESS, addr);
+	if(ret == 0) {
+		ALOGI("get_physical_address: %d", *addr);
+		return 0;
+	} else {
+		ALOGE("get_physical_address: failed: %d", ret);
+		return -errno;
+	}
 }
 
 static int send_message(const struct hdmi_cec_device* dev, const cec_message_t *msg)
 {
+	if(fd < 0) {
+		ALOGE("send_message: not ready");
+		return -EEXIST;
+	}
+
+	ALOGI("hdmi-cec sending initiator=%d destination=%d length=%d",
+		msg->initiator, msg->destination, msg->length);
+
 	unsigned char message[CEC_MESSAGE_BODY_MAX_LENGTH + 1];
 	message[0] = (msg->initiator << 4) | (msg->destination & 0x0f);
 	memcpy(message+1, msg->body, msg->length);
-	return write(fd, message, msg->length + 1);
+	int ret = write(fd, message, msg->length + 1);
+	if(ret >= 0) {
+		ALOGI("send_message: sent: %d", ret);
+		return HDMI_RESULT_SUCCESS;
+	} else {
+		ALOGE("send_message: failed: %d", errno);
+		if(errno == EBUSY) {
+			return HDMI_RESULT_NACK;
+		} else if(errno == EIO) {
+			return HDMI_RESULT_NACK;
+		} else {
+			return HDMI_RESULT_FAIL;
+		}
+	}
+}
+
+static void hotplug_event(struct hdmi_cec_device* dev, int port_id, int connected)
+{
+	hdmi_event_t event;
+	event.type = HDMI_EVENT_HOT_PLUG;
+	event.dev = dev;
+	event.hotplug.port_id = port_id;
+	event.hotplug.connected = connected;
+
+	if(callback_func) {
+		ALOGI("hotplug_event");
+		callback_func(&event, callback_arg);
+	}
 }
 
 static void register_event_callback(const struct hdmi_cec_device* dev,
@@ -98,15 +151,18 @@ static void register_event_callback(const struct hdmi_cec_device* dev,
 {
 	callback_func = callback;
 	callback_arg = arg;
+	ALOGI("register_event_callback: %p", callback);
 }
 
 static void get_version(const struct hdmi_cec_device* dev, int* version)
 {
+	ALOGI("get_version");
 	*version = 0;
 }
 
 static void get_vendor_id(const struct hdmi_cec_device* dev, uint32_t* vendor_id)
 {
+	ALOGI("get_vendor_id");
 	*vendor_id = 0;
 }
 
@@ -121,12 +177,16 @@ static void get_port_info(const struct hdmi_cec_device* dev,
 		.physical_address = 0,
 	};
 
+	ALOGI("get_port_info");
+
 	*total = 1;
 	list[0] = &info;
 }
 
 static void set_option(const struct hdmi_cec_device* dev, int flag, int value)
 {
+	ALOGV("set_option: flag=%d value=%d", flag, value);
+
 	switch(flag) {
 	//case HDMI_OPTION_WAKEUP:
 
@@ -145,6 +205,7 @@ static void set_option(const struct hdmi_cec_device* dev, int flag, int value)
 
 static void set_audio_return_channel(const struct hdmi_cec_device* dev, int port_id, int flag)
 {
+	ALOGV("set_audio_return_channel: port_id=%d flag=%d", port_id, flag);
 }
 
 static int is_connected(const struct hdmi_cec_device* dev, int port_id)
@@ -154,12 +215,16 @@ static int is_connected(const struct hdmi_cec_device* dev, int port_id)
 
 static int close_hdmi_cec(struct hw_device_t* device)
  {
+	ALOGV("close_hdmi_cec");
+
 	if(fd > 0) {
 		if(process_thd > 0) {
+			ALOGI("closing processing thread...");
 			closed = 1;
 			pthread_join(process_thd, NULL);
 			process_thd = 0;
 		}
+
 		disable_hdmi_cec();
 		close(fd);
 		fd = 0;
@@ -181,7 +246,7 @@ static int has_data()
   	return select(fd + 1, &set, NULL, NULL, &timeout);
 }
 
-static void *process_thread(void *arg)
+static void *process_thread(void *dev)
 {
 	hdmi_cec_event_t received_event;
 	hdmi_event_t event;
@@ -190,24 +255,38 @@ static void *process_thread(void *arg)
 		int ret = has_data();
 		if(ret == -1) {
 			usleep(500*1000);
+			ALOGE("failed to receive data");
 			continue;
 		} else if(ret == 0) {
 			continue;
 		}
 
-		ret = read(fd, &event, sizeof(hdmi_cec_event_t));
-		if(ret <= 0 || received_event.msg_len < 1) {
+		ret = read(fd, &received_event, sizeof(hdmi_cec_event_t));
+		if(ret <= 0 || received_event.msg_len < 2) {
+			ALOGE("invalid data receeived: ret=%d msg_len=%d", ret, received_event.msg_len);
 			continue;
 		}
 
+		static unsigned last_notify = 0;
+		if (last_notify + 10 < time(NULL)) {
+			hotplug_event(dev, 0, 1);
+			last_notify = time(NULL);
+		}
+
 		event.type = HDMI_EVENT_CEC_MESSAGE;
+		event.dev = dev;
 		event.cec.initiator = received_event.msg[0] >> 4;
 		event.cec.destination = received_event.msg[0] & 0x0f;
 		event.cec.length = received_event.msg_len - 1;
-		memcpy(&event.cec.body, received_event.msg, event.cec.length);
+		memcpy(&event.cec.body, received_event.msg+1, event.cec.length);
+
+		ALOGI("hdmi-cec received: initiator=%d destination=%d length=%d",
+			event.cec.initiator, event.cec.destination, event.cec.length);
 
 		if(callback_func) {
 			callback_func(&event, callback_arg);
+		} else {
+			ALOGE("process_thread: no callback");
 		}
 	}
 	return NULL;
@@ -216,11 +295,15 @@ static void *process_thread(void *arg)
 static int open_hdmi_cec(const struct hw_module_t* module, char const* name,
         struct hw_device_t** device)
 {
+	ALOGI("open_hdmi_cec");
+
 	int ret;
     hdmi_cec_device_t *dev = (hdmi_cec_device_t *) malloc(sizeof(hdmi_cec_device_t));
 
-    if(dev == NULL)
+    if(dev == NULL) {
+    	ALOGE("failed to allocate");
         return -1;
+    }
 
 	fd = open(CEC_SUNXI_PATH, O_RDWR);
 	if(fd < 0) {
@@ -259,6 +342,8 @@ static int open_hdmi_cec(const struct hw_module_t* module, char const* name,
     dev->is_connected = is_connected;
 
     *device = (struct hw_device_t*)dev;
+
+    ALOGI("open_hdmi_cec: success");
     return 0;
 }
 

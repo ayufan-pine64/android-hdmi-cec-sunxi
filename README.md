@@ -6,6 +6,8 @@ Sometimes it does work, sometimes it does not.
 
 ### How to run it?
 
+1. Connect Ethernet cable.
+
 1. Connect to ADB: `adb connect IP_ADDRESS_OF_PINE`.
 
 1. Do: `make deploy` to install kernel module, android HW driver and needed features.
@@ -14,7 +16,7 @@ Sometimes it does work, sometimes it does not.
 
 1. Reconnect with ADB: `adb disconnect; adb connect IP_ADDRESS_OF_PINE`.
 
-1. Run `make configure` and wait to check if HDMI do work.
+1. Run `make configure` and wait to check if HDMI CEC do work.
 
 ### Troubleshooting
 
